@@ -1,4 +1,4 @@
-// Import necessary modules
+// Import necessary modules 
 const express = require('express');
 const turf = require('@turf/turf');
 
@@ -27,7 +27,7 @@ function calculateCenter(points) {
     return [avgLat, avgLon];
 }
 
-// Define an endpoint for calculating the optimal point
+// Define an endpoint for calculating the optimal point and concave hull
 app.get('/calculate', (req, res) => {
     // Parse coordinates from query parameters
     const coordinates = req.query.coords;
@@ -56,8 +56,14 @@ app.get('/calculate', (req, res) => {
             return turf.point([place.lon, place.lat], { population: place.population });
         });
 
+        // Create a feature collection from points
+        const pointsCollection = turf.featureCollection(points);
+
+        // Calculate the concave hull using Turf.js
+        const concaveHull = turf.concave(pointsCollection, { maxEdge: 1.5, units: 'kilometers' });
+
         // Generate the Voronoi polygons using the bounding box
-        const voronoiPolygons = turf.voronoi(turf.featureCollection(points), { bbox: bbox });
+        const voronoiPolygons = turf.voronoi(pointsCollection, { bbox: bbox });
 
         let optimalPoint = null;
         if (voronoiPolygons) {
@@ -78,15 +84,17 @@ app.get('/calculate', (req, res) => {
             boundingBox: bbox,
             center: center,
             optimalPoint: optimalPoint,
-            voronoiPolygons: voronoiPolygons
+            voronoiPolygons: voronoiPolygons,
+            concaveHull: concaveHull
         });
 
     } catch (error) {
-        return res.status(400).json({ error: 'Invalid input format. Use a JSON array of coordinates.' });
+        console.error('Error parsing coordinates:', error);
+        res.status(500).json({ error: 'An error occurred while processing the data.' });
     }
 });
 
 // Start the server
 app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Server running on http://localhost:${PORT}`);
 });
