@@ -5,37 +5,14 @@ const turf = require('@turf/turf');
 const app = express();
 const PORT = 3000;
 
-// Function to calculate a good bounding box with padding
-function calculateBoundingBox(points, padding = 0.02) {
-    const minLat = Math.min(...points.map(p => p.lat));
-    const maxLat = Math.max(...points.map(p => p.lat));
-    const minLon = Math.min(...points.map(p => p.lon));
-    const maxLon = Math.max(...points.map(p => p.lon));
-    
-    return [
-        minLon - padding, // West (min longitude with padding)
-        minLat - padding, // South (min latitude with padding)
-        maxLon + padding, // East (max longitude with padding)
-        maxLat + padding  // North (max latitude with padding)
-    ];
-}
-
-// Function to calculate the average center of the points
-function calculateCenter(points) {
-    const avgLat = points.reduce((sum, p) => sum + p.lat, 0) / points.length;
-    const avgLon = points.reduce((sum, p) => sum + p.lon, 0) / points.length;
-    return [avgLat, avgLon];
-}
-
-// Define an endpoint for calculating the optimal point and concave hull
-app.get('/calculate', (req, res) => {
-    // Parse coordinates from query parameters
+// Function to parse and validate coordinates
+function parseCoordinates(req, res) {
     const coordinates = req.query.coords;
     if (!coordinates) {
-        return res.status(400).json({ error: 'Please provide coordinates as query parameters.' });
+        res.status(400).json({ error: 'Please provide coordinates as query parameters.' });
+        return null;
     }
 
-    // Parse the coordinates into an array of places
     try {
         const places = JSON.parse(coordinates).map(coord => ({
             lat: parseFloat(coord.lat),
@@ -43,58 +20,75 @@ app.get('/calculate', (req, res) => {
             population: parseInt(coord.population, 10)
         }));
 
-        // Validate that the coordinates have latitude, longitude, and population
         if (places.some(place => isNaN(place.lat) || isNaN(place.lon) || isNaN(place.population))) {
-            return res.status(400).json({ error: 'Invalid coordinate format. Ensure lat, lon, and population are numbers.' });
+            res.status(400).json({ error: 'Invalid coordinate format. Ensure lat, lon, and population are numbers.' });
+            return null;
         }
 
-        const bbox = calculateBoundingBox(places);
-        const center = calculateCenter(places);
+        return places;
+    } catch (err) {
+        res.status(400).json({ error: 'Invalid input format or JSON parse error.', details: err.message });
+        return null;
+    }
+}
 
-        // Convert place data into GeoJSON points for Turf.js
-        const points = places.map(place => {
-            return turf.point([place.lon, place.lat], { population: place.population });
+// Endpoint for concave hull
+app.get('/concave-hull', (req, res) => {
+    const places = parseCoordinates(req, res);
+    if (!places) return;
+
+    const points = places.map(place => turf.point([place.lon, place.lat]));
+    const pointsCollection = turf.featureCollection(points);
+
+    const maxEdgeValue = 20; // Adjust this as needed
+    const concaveHull = turf.concave(pointsCollection, { maxEdge: maxEdgeValue, units: 'kilometers' });
+
+    if (concaveHull) {
+        res.json({ concaveHull });
+    } else {
+        res.status(400).json({ error: 'Concave hull generation failed. Try increasing the maxEdge value.' });
+    }
+});
+
+// Endpoint for calculating the optimal point
+app.get('/optimal-point', (req, res) => {
+    const places = parseCoordinates(req, res);
+    if (!places) return;
+
+    const bbox = [
+        Math.min(...places.map(p => p.lon)) - 0.02,
+        Math.min(...places.map(p => p.lat)) - 0.02,
+        Math.max(...places.map(p => p.lon)) + 0.02,
+        Math.max(...places.map(p => p.lat)) + 0.02
+    ];
+
+    const points = places.map(place => turf.point([place.lon, place.lat], { population: place.population }));
+    const pointsCollection = turf.featureCollection(points);
+
+    const voronoiPolygons = turf.voronoi(pointsCollection, { bbox: bbox });
+    let optimalPoint = null;
+
+    if (voronoiPolygons) {
+        voronoiPolygons.features.forEach((feature, index) => {
+            const centroid = turf.centroid(feature);
+            const lat = centroid.geometry.coordinates[1];
+            const lon = centroid.geometry.coordinates[0];
+
+            const maxPopulation = Math.max(...places.map(p => p.population));
+            if (places[index] && places[index].population === maxPopulation) {
+                optimalPoint = { lat: lat, lon: lon };
+            }
         });
+    }
 
-        // Create a feature collection from points
-        const pointsCollection = turf.featureCollection(points);
-
-        // Calculate the concave hull using Turf.js
-        const concaveHull = turf.concave(pointsCollection, { maxEdge: 1.5, units: 'kilometers' });
-
-        // Generate the Voronoi polygons using the bounding box
-        const voronoiPolygons = turf.voronoi(pointsCollection, { bbox: bbox });
-
-        let optimalPoint = null;
-        if (voronoiPolygons) {
-            voronoiPolygons.features.forEach((feature, index) => {
-                const centroid = turf.centroid(feature);
-                const lat = centroid.geometry.coordinates[1];
-                const lon = centroid.geometry.coordinates[0];
-
-                const maxPopulation = Math.max(...places.map(p => p.population));
-                if (places[index] && places[index].population === maxPopulation) {
-                    optimalPoint = { lat: lat, lon: lon };
-                }
-            });
-        }
-
-        // Return the results as JSON
-        res.json({
-            boundingBox: bbox,
-            center: center,
-            optimalPoint: optimalPoint,
-            voronoiPolygons: voronoiPolygons,
-            concaveHull: concaveHull
-        });
-
-    } catch (error) {
-        console.error('Error parsing coordinates:', error);
-        res.status(500).json({ error: 'An error occurred while processing the data.' });
+    if (optimalPoint) {
+        res.json({ optimalPoint });
+    } else {
+        res.status(400).json({ error: 'Optimal point calculation failed.' });
     }
 });
 
 // Start the server
 app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server is running on http://localhost:${PORT}`);
 });
