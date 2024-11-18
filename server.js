@@ -88,6 +88,26 @@ app.get('/optimal-point', (req, res) => {
     }
 });
 
+// Endpoint for calculating area
+app.get('/calculate-area', (req, res) => {
+    const places = parseCoordinates(req, res);
+    if (!places) return;
+
+    // Create a polygon from the coordinates
+    const coordinates = places.map(place => [place.lon, place.lat]);
+    // Ensure the polygon is closed by repeating the first coordinate at the end
+    coordinates.push([places[0].lon, places[0].lat]);
+
+    const polygon = turf.polygon([coordinates]);
+
+    try {
+        const area = turf.area(polygon); // Area in square meters
+        res.json({ area: area });
+    } catch (error) {
+        res.status(500).json({ error: 'Error calculating area', details: error.message });
+    }
+});
+
 // Start the server
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
